@@ -1,0 +1,208 @@
+---
+title: "Lasso and Cox Regression"
+author: "Jiajun"
+date: "1/2/2020"
+output:
+  rmdformats::readthedown:
+    theme: sandstone
+    highlight: tango
+editor_options:
+  chunk_output_type: inline
+---
+
+<style type="text/css">
+
+h2 { /* Header 2 */
+  font-size: 24px;
+}
+
+p { /* Normal Text */
+  font-size: 17px;
+}
+
+code.r{ /* Code block */
+    font-size: 8px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Library and Data
+
+```{r load-library-and-data}
+library(survival)
+library(tidyverse)
+library(penalized)
+library(latex2exp)
+
+library(readxl)
+raw_data <- read_excel("Aim3-early-adversity-subjects-F-survival-2020-10-09.xlsx")
+```
+
+## EDA
+
+```{r eda-check-na-and-data-types}
+# sum(is.na(raw_data))
+
+data <- raw_data %>%
+  mutate(sex = factor(sex),
+         matgrp = factor(matgrp),
+         status = factor(status))
+
+summary(data)
+```
+
+- No `NA` values
+- Response (survival time): `age`
+- Categorical variables (3):
+  1. `sex`: only contains Female
+  2. `matgrp`: social group of mothers
+  3. `status`: 0, alive; 1, dead; 3, dropped out due to observer events
+- Logical variables (6): `dead`, `adv_density`, `adv_rain`, `adv_mom`, `adv_sib`, `adv_mom_rank`, `adv_mom_dsi`
+- Date (2): `birth`, `statdate`
+- Numerical variables (1): `adv_cumulative`
+- Other (1): `sname`
+
+
+`sex` is the same for all samples so there is no need to include it. Here I would treat the `status` = 3 as non-informative censoring so that `dead` is included as censoring variable. The date does not seem useful at this stage since I am not going to consider temporal information. Also, `sname` is not informative as raw string type.
+
+Hence, the censoring variable is `dead` and the predictors I use are
+
+- six adversities, `adv_cumulative`
+- interactions: `adv_mom`:`other adversity`, `adv_rain`:`other adversity`
+
+
+```{r prepare-penalized-covariates}
+data_sub <- data %>% select(starts_with("adv_"))
+
+# interactions selected are between adv_mom:other, and adv_rain:other
+formula <- "~ . + adv_mom:(.-adv_cumulative) + adv_rain:(.-adv_cumulative)"
+penalized_covariates <- model.matrix(as.formula(formula) , data = data.frame(data_sub))
+
+# remove intercept ready for penalized covariates
+penalized_covariates <- penalized_covariates[, colnames(penalized_covariates) != "(Intercept)"]
+```
+
+
+## Lasso
+
+```{r lasso-methods-for-variable-selection}
+set.seed(42)
+
+cv <- profL1(
+  Surv(data$age, data$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  fold = 5,
+  minlambda1 = 5,
+  maxlambda1 = 25,
+  trace = F
+)
+
+set.seed(42)
+opt <- optL1(
+  Surv(data$age, data$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  fold = 5,
+  trace = F
+)
+```
+
+
+```{r plot-cv-results, echo=FALSE}
+ggplot() +
+  geom_line(aes(x = cv$lambda, y = cv$cvl)) +
+  geom_vline(xintercept = opt$lambda,
+             color = "gray", size = 2) +
+  labs(x = TeX("$\\lambda$"), y = "Partial Likelihood",
+       caption = "Cross-validated partial likelihood for a range values of lambda. The vertical gray line shows the global maximum.") +
+  theme_bw()
+```
+
+
+## Stepwise Lasso Fit
+
+```{r stepwise-lasso-fit, fig.height=6, fig.width=12}
+stepwise <- penalized(
+  Surv(data$age, data$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  steps = 20,
+  lambda1 = 1,
+  trace = F
+)
+
+plotpath(
+  stepwise,
+  labelsize = 0.8,
+  standardize = T
+)
+
+abline(
+  v = opt$lambda,
+  col = "gray",
+  lwd = 2
+)
+```
+
+
+
+## Nonzero covariates
+
+```{r coef}
+final <- penalized(
+  Surv(data$age, data$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  lambda1 = opt$lambda,
+  trace = F
+)
+nonzero_varnames <- names(final@penalized)[final@penalized != 0]
+nonzero_varnames
+```
+
+Variable selection by lasso picks out 5 covariates: `adv_density`, `adv_mom`, `adv_rain:adv_mom`, `adv_mom:adv_sib`, and `adv_mom:adv_mom_ds`.
+
+
+## Cox Regression
+
+```{r cox-model-with-selected-covariates}
+
+formula = paste("Surv(data$age, data$dead) ~", paste0(nonzero_varnames, collapse = "+ "))
+
+cox <- coxph(
+  as.formula(formula),
+  data = data.frame(penalized_covariates)
+)
+
+summary(cox)
+```
+
+
+## Rerun with composite adversity
+
+""LASSO pick up five terms (two main effects and three interactions (all with maternal loss), but none of the interaction term is significant.I was wondering if you can create a composite variable of whether there is one adversity besides mom death (sum of all other adversities>0), and rerun the analysis with the two main effects and the interaction between mom death and this composite adversity.""
+
+```{r rerun-with-modified-covariates}
+data_composite <- raw_data %>%
+  mutate(adv_composite = adv_rain+adv_sib+adv_mom_dsi) %>%
+  select(adv_density, adv_mom, adv_composite)
+
+cox_composite <- coxph(
+  Surv(data$age, data$dead) ~ adv_density + adv_mom + adv_mom*adv_composite,
+  data = data_composite
+)
+
+summary(cox_composite)
+```
+
+
+
+

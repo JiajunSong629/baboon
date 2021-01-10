@@ -1,0 +1,5 @@
+# Resource files
+*.pdf
+*.txt
+*.csv
+.Rproj.user

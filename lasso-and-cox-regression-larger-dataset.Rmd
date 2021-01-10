@@ -1,0 +1,88 @@
+---
+title: "Lasso and Cox Regression - Larger Dataset"
+author: "Jiajun"
+date: "1/2/2020"
+output:
+  rmdformats::readthedown:
+    theme: sandstone
+    highlight: tango
+editor_options:
+  chunk_output_type: inline
+---
+
+<style type="text/css">
+
+h2 { /* Header 2 */
+  font-size: 24px;
+}
+
+p { /* Normal Text */
+  font-size: 17px;
+}
+
+code.r{ /* Code block */
+    font-size: 8px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Library and Data
+
+```{r load-library-and-data}
+library(survival)
+library(tidyverse)
+library(penalized)
+library(latex2exp)
+
+library(readxl)
+raw_data <- read_excel("Aim3-early-adversity-subjects-F-survival-2020-10-09.xlsx")
+raw_data_larger <- read_excel("Aim3-early-adversity-subjects-F-survival-2021-01-07.xlsx")
+```
+
+
+## EDA
+
+```{r eda-check-na-and-data-types}
+# sum(is.na(raw_data))
+
+data <- raw_data_larger %>%
+  mutate(sex = factor(sex),
+         matgrp = factor(matgrp),
+         status = factor(status))
+```
+
+Done last time.
+
+Hence, the censoring variable is `dead` and the predictors I use are
+
+- six adversities, `adv_cumulative`
+- interactions: `adv_mom`:`other adversity`, `adv_rain`:`other adversity`
+
+
+```{r prepare-penalized-covariates}
+data_sub <- data %>% select(starts_with("adv_"))
+
+# interactions selected are between adv_mom:other, and adv_rain:other
+formula <- "~ . + adv_mom:(.-adv_cumulative) + adv_rain:(.-adv_cumulative)"
+penalized_covariates <- model.matrix(as.formula(formula) , data = data.frame(data_sub))
+
+# remove intercept ready for penalized covariates
+penalized_covariates <- penalized_covariates[, colnames(penalized_covariates) != "(Intercept)"]
+```
+
+
+
+
+
+
+
+
+
+
