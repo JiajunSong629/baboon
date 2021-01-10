@@ -1,5 +1,4 @@
-# Resource files
-*.pdf
-*.txt
-*.csv
-.Rproj.user
+data/**
+references/**
+.Rhistory
+.Rproj.user/
