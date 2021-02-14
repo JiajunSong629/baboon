@@ -1,0 +1,40 @@
+h2 { /* Header 2 */
+  font-size: 24px;
+}
+
+p { /* Normal Text */
+  font-size: 17px;
+}
+
+#content p {
+    margin-bottom: 6px;
+}
+
+code.r{ /* Code block */
+  font-size: 20px;
+}
+pre { /* Code block - determines code spacing between lines */
+  font-size: 14px;
+}
+
+body {
+  font-family: "Helvetica Neue",Helvetica,Arial,sans-serif;
+  font-size: 16px;
+  line-height: 1.42857143;
+  color: #333;
+  background-color: #fff;
+}
+
+#main ul, #content .toctree-wrapper ul, article ul {
+    list-style: disc;
+    line-height: 30px;
+    margin-bottom: 24px;
+}
+
+#content {
+    background: #fcfcfc;
+    height: 100%;
+    margin-left: 300px;
+    max-width: 1000px;
+    min-height: 100%;
+}

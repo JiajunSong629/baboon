@@ -1,0 +1,184 @@
+---
+title: "Lasso and Cox Regression - Larger Dataset"
+author: "Jiajun"
+date: "1/9/2021"
+output:
+  rmdformats::readthedown:
+    css: ["css/text_style.css", "css/table_style.css"]
+    theme: sandstone
+    toc_depth: 3
+    highlight: tango
+    code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Library and Data
+
+```{r load-library-and-data, class.source='fold-show'}
+library(survival)
+library(tidyverse)
+library(penalized)
+
+source("../R/build_feature.R")
+source("../R/lasso_helper.R")
+source("../R/cox_helper.R")
+
+library(readxl)
+raw_data <- read_excel("../data/Aim3-early-adversity-subjects-F-survival-2020-10-09.xlsx")
+raw_data_larger <- read_excel("../data/Aim3-early-adversity-subjects-F-survival-2021-01-07.xlsx")
+```
+
+
+## EDA
+
+### Preprocess
+
+```{r eda-check-na-and-data-types}
+data <- preprocess(raw_data)
+data_larger <- preprocess(raw_data_larger)
+data_larger_sub <- data_larger[!data_larger$age_less_than_1, ]
+```
+
+The process is
+
+- run full model with all the main effects of six adversities
+- run cross-validation lasso to pick the optimal penalization parameter
+- run lasso with optimal penalization parameter and pick out the covariates
+- run cox model with the selected covariates
+
+
+## Results {.tabset .tabset-fade .tabset-pills}
+
+### Smaller dataset
+
+Full Model with main effects
+
+```{r smaller-dataset-full-model}
+varnames <- names(data)[startsWith(names(data), "adv_")][-7]
+full_formula <- paste("Surv(data$age, data$dead) ~", paste0(varnames, collapse = "+ "))
+
+full <- coxph(
+  as.formula(full_formula),
+  data = data
+)
+
+round(summary(full)$coef, 3)[, -3]
+```
+
+```{r smaller-dataset-lasso-results}
+penalized_covariates <- get_penalized_covariates(data = data, below_one = TRUE)
+
+opt_lambda <- get_opt_lambda_of_lasso(
+  data = data,
+  penalized_covariates = penalized_covariates
+)
+
+final <- penalized(
+  Surv(data$age, data$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  lambda1 = opt_lambda,
+  trace = F
+)
+
+nonzero_varnames <- names(final@penalized)[final@penalized != 0]
+
+cox <- run_cox(
+  data = data,
+  nonzero_varnames = nonzero_varnames,
+  penalized_covariates = penalized_covariates
+)
+
+round(summary(cox)$coef, 3)[, -3]
+```
+
+
+
+### Larger dataset (complete)
+
+```{r larger-dataset-full-model}
+full_formula <- paste("Surv(data_larger$age, data_larger$dead) ~", paste0(varnames, collapse = "+ "))
+
+full_larger <- coxph(
+  as.formula(full_formula),
+  data = data_larger
+)
+
+round(summary(full_larger)$coef, 3)[, -3]
+```
+
+
+```{r larger-dataset-lasso-results}
+penalized_covariates_larger <- get_penalized_covariates(data = data_larger, below_one = FALSE)
+
+opt_lambda_larger <- get_opt_lambda_of_lasso(
+  data = data_larger,
+  penalized_covariates = penalized_covariates_larger
+)
+
+final_larger <- penalized(
+  Surv(data_larger$age, data_larger$dead),
+  penalized = penalized_covariates_larger,
+  standardize = T,
+  lambda1 = opt_lambda_larger,
+  trace = F
+)
+
+nonzero_varnames_larger <- names(final_larger@penalized)[final_larger@penalized != 0]
+
+cox_larger <- run_cox(
+  data = data_larger,
+  nonzero_varnames = nonzero_varnames_larger,
+  penalized_covariates = penalized_covariates_larger
+)
+
+round(summary(cox_larger)$coef, 3)[, -3]
+```
+
+
+### Larger dataset (age > 1)
+
+```{r larger-sub-dataset-full-model}
+full_formula <- paste("Surv(data_larger_sub$age, data_larger_sub$dead) ~", paste0(varnames, collapse = "+ "))
+
+full_larger_sub <- coxph(
+  as.formula(full_formula),
+  data = data_larger_sub
+)
+
+round(summary(full_larger_sub)$coef, 3)[, -3]
+```
+
+
+```{r larger-dataset-sub-lasso-results}
+penalized_covariates_larger_sub <- get_penalized_covariates(data = data_larger_sub, below_one = FALSE)
+
+opt_lambda_larger_sub <- get_opt_lambda_of_lasso(
+  data = data_larger_sub,
+  penalized_covariates = penalized_covariates_larger_sub
+)
+
+final_larger_sub <- penalized(
+  Surv(data_larger_sub$age, data_larger_sub$dead),
+  penalized = penalized_covariates_larger_sub,
+  standardize = T,
+  lambda1 = opt_lambda_larger_sub,
+  trace = F
+)
+
+nonzero_varnames_larger_sub <- names(final_larger_sub@penalized)[final_larger_sub@penalized != 0]
+
+cox_larger_sub <- run_cox(
+  data = data_larger_sub,
+  nonzero_varnames = nonzero_varnames_larger_sub,
+  penalized_covariates = penalized_covariates_larger_sub
+)
+
+round(summary(cox_larger_sub)$coef, 3)[, -3]
+```
+
+  

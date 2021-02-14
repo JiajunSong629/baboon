@@ -1,0 +1,470 @@
+---
+title: "Three Age-Group Analysis - With SCI"
+author: "Jiajun"
+date: "2/14/2021"
+output:
+  rmdformats::readthedown:
+    css: ["css/text_style.css", "css/table_style.css"]
+    theme: sandstone
+    toc_depth: 3
+    highlight: tango
+    code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.width = 10, fig.height = 5)
+```
+
+## Library and Data
+
+```{r load-library-and-data, class.source='fold-show'}
+library(survival)
+library(tidyverse)
+library(penalized)
+library(kableExtra)
+library(ggrepel)
+
+source("../R/utils.R")
+source("../R/full_helper.R")
+source("../R/lasso_helper.R")
+source("../R/stepBIC_helper.R")
+source("../R/cumulative_helper.R")
+
+raw_data <- read_csv("../data/Aim3-early-adversity-subjects-F-survival-2021-01-29.csv")
+raw_data <- dplyr::select(raw_data, -c("adv_mom_dsi", "adv_cumulative"))
+```
+
+Raw data here refers to the larger dataset.
+
+
+## EDA
+
+Below is the Kaplan-Meier estimation of the survival function on the raw data.
+
+```{r eda}
+km <- survfit(Surv(raw_data$age, raw_data$dead) ~ 1, conf.type = "log-log")
+ggplot() +
+  geom_line(aes(x = km$time, y = km$surv)) +
+  geom_vline(aes(xintercept = 1), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = 5), color = "red", linetype = "dashed") +
+  labs(x = expression("Time (year)"), y = expression("Survival"),
+       title = "Kaplan-Meier estimate") +
+  scale_x_continuous(breaks = seq(0, 25, 1)) +
+  theme_classic()
+```
+
+
+## Analysis Process
+
+We conduct four models on three datasets derived from the raw data.
+
+Four models:
+
+- Cox model of survival data versus all the main effects (six adversities)
+- Cox model of survival data versus main effects and interaction terms selected by lasso
+- Cox model of survival data versus main effects and interaction terms selected by stepwise BIC
+- Cox model of survival data versus `adv_mom`, sum of other adversities `adv_other_cumulative` and their interaction term
+
+Three datasets:
+
+- `age_below_1`: Include all the samples. For those whose `age` > 1, use `age` = 1, and `dead` = FALSE
+- `age_above_1_below_5`: Include samples of `age` > 1. For those whose `age` > 5, use `age` = 5, and `dead` = FALSE
+- `age_above_5`: Include samples of `age` > 5.
+
+Note that for the `age_below_1` dataset, we exclude `adv_sib` from all models.
+
+
+## Modification of the Covariates
+
+First, we replace **low maternal DSI** with **low maternal SCI**.
+
+And brief information of covariates we are using in this analysis is in the table below:
+
+```{r covariates-info-table}
+covariate_names <- c("adv_density", "adv_rain", "adv_mom",
+                     "adv_sib", "adv_mom_rank", "adv_mom_sci",
+                     "adv_cumulative_sci")
+covariate_types <- c(rep("Logical", 6), "Numeric")
+covariate_meanings <- c("Group size is in the highest quartile",
+                       "Rainfall <= 200mm",
+                       "Mom dies before age 4",
+                       "A sibling is born",
+                       "Mom's rank is in the lowest quartile",
+                       "Social connection is in the lowest quartile",
+                       "Sum of the above six adversities")
+
+data.frame(
+  list(types = covariate_types,
+       meanings = covariate_meanings)
+) %>%
+  `row.names<-`(covariate_names) %>%
+  kable(col.names = c("Type", "Meaning if TRUE")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+```{r create-dataset}
+age_below_1 <- raw_data %>%
+  select(starts_with("adv_"), age, dead, -adv_cumulative_sci) %>%
+  mutate(dead = if_else(age > 1, FALSE, dead)) %>%
+  mutate(age = if_else(age > 1, 1, age))
+
+age_above_1_below_5 <- raw_data %>%
+  filter(age >= 1) %>%
+  select(starts_with("adv_"), age, dead, -adv_cumulative_sci) %>%
+  mutate(dead = if_else(age > 5, FALSE, dead)) %>%
+  mutate(age = if_else(age > 5, 5, age))
+
+age_above_5 <- raw_data %>%
+  filter(age >= 5) %>%
+  select(starts_with("adv_"), age, dead, -adv_cumulative_sci)
+```
+
+The cumulative adversities category in three age groups is in the table below. Note that when counting the cumulative adversities in `Age 1-` group we exclude `adv_sib`.
+
+```{r cumulative-summary}
+cumulative_summary_1 <- age_below_1 %>%
+  mutate(adv_other_cumulative = adv_rain+adv_mom_sci+adv_mom_rank+adv_density) %>%
+  group_by(adv_other_cumulative) %>%
+  summarise(count = n()) %>%
+  select(count)
+
+cumulative_summary_2 <- age_above_1_below_5 %>%
+  mutate(adv_other_cumulative = adv_rain+adv_sib+adv_mom_sci+adv_mom_rank+adv_density) %>%
+  group_by(adv_other_cumulative) %>%
+  summarise(count = n()) %>%
+  select(count)
+
+cumulative_summary_3 <- age_above_5 %>%
+  mutate(adv_other_cumulative = adv_rain+adv_sib+adv_mom_sci+adv_mom_rank+adv_density) %>%
+  group_by(adv_other_cumulative) %>%
+  summarise(count = n()) %>%
+  select(count)
+
+data.frame(cbind(cumulative_summary_1, cumulative_summary_2, cumulative_summary_3)) %>%
+  t() %>%
+  `rownames<-`(c("Age 1-", "Age 1-5", "Age 5+")) %>%
+  kable(col.names = 0:4) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+<br>
+
+## Age below 1 {.tabset .tabset-fade .tabset-pills}
+
+```{r visualize-age-below-1, eval=FALSE, include=FALSE}
+age_below_1 %>%
+  dplyr::select(-c(age, dead)) %>%
+  mutate(sample_id = 1:nrow(age_below_1)) %>%
+  pivot_longer(cols = starts_with("adv_")) %>%
+  ggplot(aes(x = sample_id, y = name, fill = factor(value))) +
+  scale_fill_manual(values = c("white", "black")) +
+  geom_tile() +
+  theme_minimal()
+```
+
+
+### Main effects
+
+
+```{r age-below-1-full-model}
+full_age_below_1 <- get_full(age_below_1, below_one = TRUE)
+round(summary(full_age_below_1)$coef, 3)
+```
+
+```{r termplots-age-below-1-full-model}
+plot_terms(full_age_below_1)
+mtext("Age < 1: Log-hazard versus important variables", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+### Lasso
+
+```{r age-below-1-lasso}
+penalized_below_1 <- get_penalized_covariates(age_below_1, below_one = TRUE)
+opt_lambda_below_1 <- get_opt_lambda_of_lasso(
+  data = age_below_1,
+  penalized_covariates = penalized_below_1
+)
+nonzero_vars_below_1 <- get_nonzero_varnames_of_opt_lasso(
+  data = age_below_1,
+  penalized_covariates = penalized_below_1,
+  opt_lambda = opt_lambda_below_1
+)
+vars_below_1 <- get_varnames_in_final_model(nonzero_vars_below_1)
+lasso_age_below_1 <- run_cox(
+  data = age_below_1,
+  varnames = vars_below_1,
+  penalized_covariates = penalized_below_1
+)
+round(summary(lasso_age_below_1)$coef, 3)
+```
+
+```{r termplots-age-below-1-lasso}
+plot_terms(lasso_age_below_1)
+mtext("Age < 1: Log-hazard versus important variables (Lasso)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+### Stepwise-BIC
+
+```{r age-below-1-stepwise-bic}
+stepBIC_age_below_1 <- get_stepBIC(age_below_1, below_one=TRUE)
+round(summary(stepBIC_age_below_1)$coef, 3)
+```
+
+```{r termplots-age-below-1-stepbic}
+plot_terms(stepBIC_age_below_1)
+mtext("Age < 1: Log-hazard versus important variables (BIC)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+### Cumulative
+
+```{r age_below_1-cumulative}
+cumulative_age_below_1 <- get_cumulative(age_below_1, below_one=TRUE)
+round(summary(cumulative_age_below_1)$coef, 3)
+```
+
+```{r termplots-age-below-1-cumulative, eval=FALSE, include=FALSE}
+plot_terms(cumulative_age_below_1)
+mtext("Age < 1: Log-hazard versus important variables (Cumulative)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+<br>
+
+## Age above 1 and below 5 {.tabset .tabset-fade .tabset-pills}
+
+
+### Main effects
+
+
+```{r age-above-1-below-5-full-model}
+full_age_above_1_below_5 <- get_full(age_above_1_below_5, below_one = FALSE)
+round(summary(full_age_above_1_below_5)$coef, 3)
+```
+
+```{r termplots-age-above-1-below-5-full-model}
+plot_terms(full_age_above_1_below_5)
+mtext("Age 1 - 5: Log-hazard versus important variables", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+### Lasso
+
+```{r age-above-1-below-5-lasso}
+penalized_above_1_below_5 <- get_penalized_covariates(age_above_1_below_5, below_one = FALSE)
+opt_lambda_above_1_below_5 <- get_opt_lambda_of_lasso(
+  data = age_above_1_below_5,
+  penalized_covariates = penalized_above_1_below_5
+)
+nonzero_vars_above_1_below_5 <- get_nonzero_varnames_of_opt_lasso(
+  data = age_above_1_below_5,
+  penalized_covariates = penalized_above_1_below_5,
+  opt_lambda = opt_lambda_above_1_below_5
+)
+vars_above_1_below_5 <- get_varnames_in_final_model(nonzero_vars_above_1_below_5)
+lasso_age_above_1_below_5 <- run_cox(
+  data = age_above_1_below_5,
+  varnames = vars_above_1_below_5,
+  penalized_covariates = penalized_above_1_below_5
+)
+round(summary(lasso_age_above_1_below_5)$coef, 3)
+```
+
+```{r termplots-age-above-1-below-5-lasso}
+plot_terms(lasso_age_above_1_below_5)
+mtext("Age 1 - 5: Log-hazard versus important variables (Lasso)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+
+### Stepwise-BIC
+
+```{r age-above-1-below-5-stepwise-bic}
+stepBIC_age_above_1_below_5 <- get_stepBIC(age_above_1_below_5, below_one=FALSE)
+round(summary(stepBIC_age_above_1_below_5)$coef, 3)
+```
+
+```{r termplots-age-above-1-below-5-stepbic}
+plot_terms(stepBIC_age_above_1_below_5)
+mtext("Age 1 - 5: Log-hazard versus important variables (BIC)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+### Cumulative
+
+```{r age-above-1-below-5-cumulative}
+cumulative_age_above_1_below_5 <- get_cumulative(age_above_1_below_5)
+round(summary(cumulative_age_above_1_below_5)$coef, 3)
+```
+
+```{r termplots-age-above-1-below-5-cumulative, eval=FALSE, include=FALSE}
+plot_terms(cumulative_age_above_1_below_5)
+mtext("Age 1 - 5: Log-hazard versus important variables (Cumulative)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+
+<br>
+
+## Age above 5 {.tabset .tabset-fade .tabset-pills}
+
+
+### Main effects
+
+
+```{r age-above-5-full-model}
+full_age_above_5 <- get_full(age_above_5, below_one = FALSE)
+round(summary(full_age_above_5)$coef, 3)
+```
+
+```{r termplots-age-above-5-full-model}
+plot_terms(full_age_above_5)
+mtext("Age > 5: Log-hazard versus important variables", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+### Lasso
+
+```{r age-above-5-lasso}
+penalized_above_5 <- get_penalized_covariates(age_above_5, below_one = FALSE)
+opt_lambda_above_5 <- get_opt_lambda_of_lasso(
+  data = age_above_5,
+  penalized_covariates = penalized_above_5
+)
+nonzero_vars_above_5 <- get_nonzero_varnames_of_opt_lasso(
+  data = age_above_5,
+  penalized_covariates = penalized_above_5,
+  opt_lambda = opt_lambda_above_5
+)
+vars_above_5 <- get_varnames_in_final_model(nonzero_vars_above_5)
+lasso_age_above_5 <- run_cox(
+  data = age_above_5,
+  varnames = vars_above_5,
+  penalized_covariates = penalized_above_5
+)
+round(summary(lasso_age_above_5)$coef, 3)
+```
+
+```{r termplots-age-above-5-lasso}
+plot_terms(lasso_age_above_5)
+mtext("Age > 5: Log-hazard versus important variables (Lasso)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+
+
+### Stepwise-BIC
+
+```{r age-above-5-stepwise-bic}
+stepBIC_age_above_5 <- get_stepBIC(age_above_5, below_one=FALSE)
+round(summary(stepBIC_age_above_5)$coef, 3)
+```
+
+```{r termplots-age-above-5-stepbic}
+plot_terms(stepBIC_age_above_5)
+mtext("Age > 5: Log-hazard versus important variables (BIC)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+### Cumulative
+
+```{r age-above-5-cumulative}
+cumulative_age_above_5 <- get_cumulative(age_above_5)
+round(summary(cumulative_age_above_5)$coef, 3)
+```
+
+```{r termplots-age-above-5-cumulative}
+plot_terms(cumulative_age_above_5)
+mtext("Age > 5: Log-hazard versus important variables (Cumulative)", line=0, side=3, outer=TRUE, cex=1.2)
+```
+
+
+<br>
+
+## Discussion
+
+### Where do we see interaction terms picked by models and their effects?
+
+
+```{r}
+groups <- c("Age < 1(lasso)", "Age 1-5(lasso)", "Age > 5(lasso)", "Age > 5(stepBIC)")
+interactions <- c("adv_mom_rank:adv_rain, adv_mom:adv_mom_sci",
+                  "adv_density:adv_sib, adv_mom:adv_mom_rank",
+                  "adv_mom:adv_sib", "adv_rain:adv_mom")
+if_signifcant <- c("No", "adv_density:adv_sib Yes",
+                   "No", "Yes")
+
+data.frame(
+  list(interactions = interactions,
+       if_signifcant = if_signifcant)
+) %>%
+  `row.names<-`(groups) %>%
+  kable(col.names = c("Interaction terms picked", "If significant")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+### Age 1-5 Lasso
+
+```{r}
+test_df <- data.frame(
+  case1 = c(FALSE, FALSE, FALSE, FALSE, FALSE, FALSE),   # baseline
+  case2 = c(FALSE, TRUE, FALSE, FALSE, FALSE, FALSE),    # adv_density
+  case3 = c(FALSE, FALSE, TRUE, FALSE, FALSE, FALSE),    # adv_sib
+  case4 = c(FALSE, TRUE, TRUE, FALSE, FALSE, FALSE)        # adv_density and adv_sib
+) %>%
+  `rownames<-`(names(coef(lasso_age_above_1_below_5))) %>%
+  t()
+
+preds <- predict(lasso_age_above_1_below_5, newdata = as.data.frame(test_df))
+
+plot_df <- data.frame(
+  x = c(0, 1, 0, 1),
+  y = preds,
+  group = c("first", "first", "second", "second"),
+  comment = c("baseline", "adv_densityTRUE", "adv_sibTRUE", "adv_densityTRUE+adv_sibTRUE")
+)
+
+ggplot(plot_df) +
+  geom_point(aes(x = x, y = y)) +
+  geom_line(aes(x = x, y = y, group = group)) +
+  geom_text_repel(aes(label = comment, x = x, y = y)) +
+  theme_bw() +
+  xlim(-0.5, 1.5) +
+  scale_x_discrete(breaks = c(0, 1)) +
+  labs(x = "", y = "Log-hazards") +
+  theme(axis.title = element_text(size = 15))
+```
+
+### Age > 5 StepBIC
+
+```{r}
+test_df <- data.frame(
+  case1 = c(FALSE, FALSE, FALSE),   # baseline
+  case2 = c(TRUE, FALSE, FALSE),    # mom_rain
+  case3 = c(FALSE, TRUE, FALSE),    # mom
+  case4 = c(TRUE, TRUE, TRUE)       # mom and mom_rain
+) %>%
+  `rownames<-`(c("adv_rain", "adv_mom", "adv_rain:adv_mom")) %>%
+  t()
+
+preds <- predict(stepBIC_age_above_5, newdata = as.data.frame(test_df))
+
+plot_df <- data.frame(
+  x = c(0, 0, 1, 1),
+  y = preds,
+  group = c("first", "second", "first", "second"),
+  comment = c("baseline", "adv_rainTRUE", "adv_momTRUE", "adv_rainTRUE+adv_momTRUE")
+)
+
+ggplot(plot_df) +
+  geom_point(aes(x = x, y = y)) +
+  geom_line(aes(x = x, y = y, group = group)) +
+  geom_text_repel(aes(label = comment, x = x, y = y)) +
+  theme_bw() +
+  xlim(-0.5, 1.5) +
+  scale_x_discrete(breaks = c(0, 1)) +
+  labs(x = "", y = "Log-hazards") +
+  theme(axis.title = element_text(size = 15))
+```
+
+
+

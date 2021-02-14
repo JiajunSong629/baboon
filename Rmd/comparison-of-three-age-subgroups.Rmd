@@ -1,0 +1,549 @@
+---
+title: "Three Age-Group Analysis"
+author: "Jiajun"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    css: ["css/text_style.css", "css/table_style.css"]
+    theme: sandstone
+    toc_depth: 3
+    highlight: tango
+    code_folding: hide
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.width = 10, fig.height = 5)
+```
+
+## Library and Data
+
+```{r load-library-and-data, class.source='fold-show'}
+library(survival)
+library(tidyverse)
+library(penalized)
+library(kableExtra)
+library(stringr)
+library(patchwork)
+
+source("../R/utils.R")
+
+library(readxl)
+raw_data <- read_excel("../data/Aim3-early-adversity-subjects-F-survival-2021-01-07.xlsx")
+```
+
+Raw data here refers to the larger dataset.
+
+## EDA
+
+Below is the Kaplan-Meier estimation of the survival function on the raw data.
+
+```{r eda}
+km <- survfit(Surv(raw_data$age, raw_data$dead) ~ 1, conf.type = "log-log")
+ggplot() +
+  geom_line(aes(x = km$time, y = km$surv)) +
+  geom_vline(aes(xintercept = 1), color = "red", linetype = "dashed") +
+  geom_vline(aes(xintercept = 5), color = "red", linetype = "dashed") +
+  labs(x = expression("Time (year)"), y = expression("Survival"),
+       title = "Kaplan-Meier estimate") +
+  scale_x_continuous(breaks = seq(0, 25, 1)) +
+  theme_classic()
+```
+
+## Analysis Process
+
+We conduct four models on three datasets derived from the raw data.
+
+Four models:
+
+- Cox model of survival data versus all the main effects (six adversities)
+- Cox model of survival data versus main effects and interaction terms selected by lasso
+- Cox model of survival data versus main effects and interaction terms selected by stepwise BIC
+- Cox model of survival data versus `adv_mom`, sum of other adversities `adv_other_cumulative` and their interaction term
+
+Three datasets:
+
+- `age_below_1`: Include all the samples. For those whose `age` > 1, use `age` = 1, and `dead` = FALSE
+- `age_above_1_below_5`: Include samples of `age` > 1. For those whose `age` > 5, use `age` = 5, and `dead` = FALSE
+- `age_above_5`: Include samples of `age` > 5.
+
+Note that for the `age_below_1` dataset, we exclude `adv_sib` from all models.
+
+```{r create-dataset}
+age_below_1 <- raw_data %>%
+  select(starts_with("adv_"), age, dead, -adv_cumulative) %>%
+  mutate(dead = if_else(age > 1, FALSE, dead)) %>%
+  mutate(age = if_else(age > 1, 1, age))
+
+age_above_1_below_5 <- raw_data %>%
+  filter(age >= 1) %>%
+  select(starts_with("adv_"), age, dead, -adv_cumulative) %>%
+  mutate(dead = if_else(age > 5, FALSE, dead)) %>%
+  mutate(age = if_else(age > 5, 5, age))
+
+age_above_5 <- raw_data %>%
+  filter(age >= 5) %>%
+  select(starts_with("adv_"), age, dead, -adv_cumulative)
+```
+
+Below is the summary of three datasets. The number of events refers to the number of uncensored death.
+
+
+```{r summary-of-three-datasets}
+data.frame(
+  nobs = c(nrow(age_below_1), nrow(age_above_1_below_5), nrow(age_above_5)),
+  nevt = c(sum(age_below_1$dead), sum(age_above_1_below_5$dead), sum(age_above_5$dead))
+) %>%
+  `row.names<-`(c("Age 1-", "Age 1+, 5-", "Age 5+")) %>%
+  kable(row.names = TRUE,
+        col.names = c("Number of Samples", "Number of Events")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+## Cox Model - Main Effects {.tabset .tabset-fade .tabset-pills}
+
+```{r full-model-helper}
+run_full_model <- function(data, below_one = FALSE) {
+  varnames = names(data)[startsWith(names(data), "adv_")]
+  if (below_one) {
+    varnames = varnames[varnames != "adv_sib"]
+  }
+  full_formula = paste("Surv(age, dead) ~", paste0(varnames, collapse = "+ "))
+  full_model = coxph(
+    as.formula(full_formula),
+    data = data
+  )
+  return (full_model)
+}
+```
+
+
+### Age below 1
+
+```{r age-below-1-full-model}
+full_age_below_1 <- run_full_model(age_below_1, below_one = TRUE)
+summary(full_age_below_1)
+```
+
+
+
+### Age above 1 and below 5
+
+```{r age-above-1-below-5-full-model}
+full_age_above_1_below_5 <- run_full_model(age_above_1_below_5)
+summary(full_age_above_1_below_5)
+```
+
+### Age above 5
+
+```{r age-above-5-full-model}
+full_age_above_5 <- run_full_model(age_above_5)
+summary(full_age_above_5)
+```
+
+
+## {-}
+
+```{r summary-of-full-model, eval=FALSE, include=FALSE}
+sig_vars <- sapply(
+  list(full_age_below_1, full_age_above_1_below_5, full_age_above_5),
+  function(cox_obj, level=0.05) {
+    varnames = names(cox_obj$coef)
+    pvals = summary(cox_obj)$coef[, "Pr(>|z|)"]
+    sig_vars = varnames[abs(pvals) < level]
+    sig_pvals = pvals[abs(pvals) < level]
+    sig_codes = symnum(sig_pvals, na = FALSE,
+                       cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), 
+                       symbols = c("***", "**", "*", ".", " "))
+    return (paste(sig_vars, sig_codes))
+  }
+)
+
+max_length <- max(sapply(sig_vars, length))
+sig_vars <- lapply(sig_vars, function(v) c(v, rep(NA, max_length - length(v))))
+
+options(knitr.kable.NA = '')
+data.frame(do.call(rbind, sig_vars)) %>%
+  `row.names<-`(c("Age 1-", "Age 1+, 5-", "Age 5+")) %>%
+  kable(col.names = c("", "Signif. Variables")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+```{r comparison-plot-full-model, eval=FALSE, include=FALSE}
+p1 <- plot_forest(full_age_below_1)
+p2 <- plot_forest(full_age_above_1_below_5)
+p3 <- plot_forest(full_age_above_5)
+
+p1 + p2 + p3
+```
+
+
+
+## Cox Model - Lasso {.tabset .tabset-fade .tabset-pills}
+
+```{r lasso-helper}
+get_penalized_covariates <- function(data, below_one=FALSE) {
+  data = select(data, starts_with("adv_"))
+  if (below_one) {
+    data = select(data, -adv_sib)
+  }
+  penalized_covariates <- model.matrix(
+    as.formula("~ . + .:."),
+    data = data.frame(data)
+  )
+  penalized_covariates <- penalized_covariates[, colnames(penalized_covariates) != "(Intercept)"]
+  return (penalized_covariates)
+}
+
+get_opt_lambda_of_lasso <- function(data, penalized_covariates, seed = 42, fold = 5) {
+  set.seed(seed)
+  opt <- optL1(
+    Surv(data$age, data$dead),
+    penalized = penalized_covariates,
+    standardize = T,
+    fold = fold,
+    trace = F
+  )
+  return (opt$lambda)
+}
+
+get_nonzero_varnames_of_opt_lasso <- function(data, penalized_covariates, opt_lambda) {
+  final = penalized(
+    Surv(data$age, data$dead),
+    penalized = penalized_covariates,
+    standardize = T,
+    lambda1 = opt_lambda,
+    trace = F
+  )
+  return (names(final@penalized)[final@penalized != 0])
+}
+
+get_varnames_in_final_model <- function(nonzero_varnames) {
+  # append main effects select by interaction terms
+  ans = c()
+  for (varname in nonzero_varnames) {
+    if (str_detect(varname, ":")) {
+      ans = c(ans, str_split(varname, ":")[[1]])
+    }
+    ans = c(ans, varname)
+  }
+  return (unique(ans))
+}
+
+run_cox <- function(data, varnames, penalized_covariates) {
+  formula = paste("Surv(age, dead) ~", paste0(varnames, collapse = "+ "))
+  cox <- coxph(
+    as.formula(formula),
+    data = data.frame(
+      cbind(penalized_covariates,
+            select(data, c("age", "dead"))
+      ))
+  )
+  return (cox)
+}
+```
+
+### Age below 5
+
+```{r lasso-age-below-1}
+penalized_below_1 <- get_penalized_covariates(age_below_1, below_one = TRUE)
+opt_lambda_below_1 <- get_opt_lambda_of_lasso(
+  data = age_below_1,
+  penalized_covariates = penalized_below_1
+)
+
+nonzero_vars_below_1 <- get_nonzero_varnames_of_opt_lasso(
+  data = age_below_1,
+  penalized_covariates = penalized_below_1,
+  opt_lambda = opt_lambda_below_1
+)
+
+vars_below_1 <- get_varnames_in_final_model(nonzero_vars_below_1)
+cox_below_1 <- run_cox(
+  data = age_below_1,
+  varnames = vars_below_1,
+  penalized_covariates = penalized_below_1
+)
+
+summary(cox_below_1)
+```
+
+
+### Age above 1 and below 5
+
+```{r lasso-age-above-1-below-5}
+penalized_above_1_below_5 <- get_penalized_covariates(age_above_1_below_5)
+opt_lambda_above_1_below_5 <- get_opt_lambda_of_lasso(
+  data = age_above_1_below_5,
+  penalized_covariates = penalized_above_1_below_5
+)
+nonzero_vars_above_1_below_5 <- get_nonzero_varnames_of_opt_lasso(
+  data = age_above_1_below_5,
+  penalized_covariates = penalized_above_1_below_5,
+  opt_lambda = opt_lambda_above_1_below_5
+)
+
+vars_above_1_below_5 <- get_varnames_in_final_model(nonzero_vars_above_1_below_5)
+cox_above_1_below_5 <- run_cox(
+  data = age_above_1_below_5,
+  varnames = vars_above_1_below_5,
+  penalized_covariates = penalized_above_1_below_5
+)
+
+summary(cox_above_1_below_5)
+```
+
+
+### Age above 5
+
+```{r lasso-age-above-5}
+penalized_above_5 <- get_penalized_covariates(age_above_5)
+opt_lambda_above_5 <- get_opt_lambda_of_lasso(
+  data = age_above_5,
+  penalized_covariates = penalized_above_5
+)
+nonzero_vars_above_5 <- get_nonzero_varnames_of_opt_lasso(
+  data = age_above_5,
+  penalized_covariates = penalized_above_5,
+  opt_lambda = opt_lambda_above_5
+)
+
+vars_above_5 <- get_varnames_in_final_model(nonzero_vars_above_5)
+cox_above_5 <- run_cox(
+  data = age_above_5,
+  varnames = vars_above_5,
+  penalized_covariates = penalized_above_5
+)
+
+summary(cox_above_5)
+```
+
+
+
+## {-}
+
+```{r summary-of-model-by-lasso, eval=FALSE, include=FALSE}
+lasso_sig_vars <- sapply(
+  list(cox_below_1, cox_above_1_below_5, cox_above_5),
+  function(cox_obj, level=0.05) {
+    varnames = names(cox_obj$coef)
+    pvals = summary(cox_obj)$coef[, "Pr(>|z|)"]
+    sig_vars = varnames[abs(pvals) < level]
+    sig_pvals = pvals[abs(pvals) < level]
+    sig_codes = symnum(sig_pvals, na = FALSE,
+                       cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), 
+                       symbols = c("***", "**", "*", ".", " "))
+    return (paste(sig_vars, sig_codes))
+  }
+)
+
+data.frame(t(lasso_sig_vars)) %>%
+  `row.names<-`(c("Age 1-", "Age 1+, 5-", "Age 5+")) %>%
+  kable(col.names = c("", "Signif. Variables")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+```{r comparison-plot-lasso-model, eval=FALSE, include=FALSE}
+p1 <- plot_forest(cox_below_1)
+p2 <- plot_forest(cox_above_1_below_5)
+p3 <- plot_forest(cox_above_5)
+
+p1 + p2 + p3
+```
+
+
+## Cox Model - Stepwise BIC {.tabset .tabset-fade .tabset-pills}
+
+### Age below 1
+
+```{r cox-model-bic-age-below-1}
+full_bic_below_1 <- coxph(
+  as.formula(Surv(age, dead) ~ . + .:.),
+  data = select(age_below_1, -adv_sib)
+)
+
+step_bic_below_1 <- step(
+  full_bic_below_1,
+  k = log(nrow(age_below_1)),
+  #scope = list(lower= ~ adv_density + adv_rain + adv_mom + adv_mom_rank + 
+  #  adv_mom_dsi),
+  trace = F
+)
+
+summary(step_bic_below_1)
+```
+
+### Age above 1, below 5
+
+```{r cox-model-bic-age-above-1-below-5}
+full_bic_above_1_below_5 <- coxph(
+  as.formula(Surv(age, dead) ~ . + .:.),
+  data = age_above_1_below_5
+)
+
+step_bic_above_1_below_5 <- step(
+  full_bic_above_1_below_5,
+  k = log(nrow(age_above_1_below_5)),
+  #scope = list(lower= ~ adv_density + adv_rain + adv_mom + adv_mom_rank + 
+  #  adv_mom_dsi + adv_sib),
+  trace = F
+)
+
+summary(step_bic_above_1_below_5)
+```
+
+
+### Age above 5
+
+```{r cox-model-bic-age-above-5}
+full_bic_above_5 <- coxph(
+  as.formula(Surv(age, dead) ~ . + .:.),
+  data = age_above_5
+)
+
+step_bic_above_5 <- step(
+  full_bic_above_5,
+  k = log(nrow(age_above_5)),
+  #scope = list(lower= ~ adv_density + adv_rain + adv_mom + adv_mom_rank + 
+  #  adv_mom_dsi + adv_sib),
+  trace = F
+)
+
+summary(step_bic_above_5)
+```
+
+
+## {-}
+
+```{r summary-of-model-by-bic, eval=FALSE, include=FALSE}
+bic_sig_vars <- sapply(
+  list(step_bic_below_1, step_bic_above_1_below_5, step_bic_above_5),
+  function(cox_obj, level=0.05) {
+    if (is.null(cox_obj$coef)) {
+      return ("Null model")
+    }
+    varnames = names(cox_obj$coef)
+    pvals = summary(cox_obj)$coef[, "Pr(>|z|)"]
+    sig_vars = varnames[abs(pvals) < level]
+    sig_pvals = pvals[abs(pvals) < level]
+    sig_codes = symnum(sig_pvals, na = FALSE,
+                       cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), 
+                       symbols = c("***", "**", "*", ".", " "))
+    return (paste(sig_vars, sig_codes))
+  }
+)
+max_length <- max(sapply(bic_sig_vars, length))
+bic_sig_vars <- lapply(bic_sig_vars, function(v) c(v, rep(NA, max_length - length(v))))
+
+options(knitr.kable.NA = '')
+data.frame(do.call(rbind, bic_sig_vars)) %>%
+  `row.names<-`(c("Age 1-", "Age 1+, 5-", "Age 5+")) %>%
+  kable(col.names = c("", "Signif. Variables")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+```{r comparison-plot-bic-model, eval=FALSE, include=FALSE}
+p1 <- plot_forest(step_bic_below_1)
+p2 <- plot_forest(step_bic_above_1_below_5)
+p3 <- plot_forest(step_bic_above_5)
+
+p2 + p3
+```
+
+
+
+## Cox model - Cumulative {.tabset .tabset-fade .tabset-pills}
+
+
+```{r cox-model-of-cumulative-adversities-helper-function}
+run_cox_with_cumulative <- function(data) {
+  data = data %>%
+    mutate(adv_other_cumulative = adv_sib+adv_rain+adv_mom_dsi+adv_mom_rank+adv_density) %>%
+    select(age, dead, adv_mom, adv_other_cumulative)
+  cox = coxph(
+    formula = as.formula("Surv(age, dead) ~ . + adv_mom:adv_other_cumulative"),
+    data = data
+  )
+  return (cox)
+}
+```
+
+### Age below 1
+
+```{r cumulative-age-below-1}
+cox_below_1 <- run_cox_with_cumulative(age_below_1)
+summary(cox_below_1)
+```
+
+### Age above 1 and below 5
+
+```{r cumulative-age-above-1-below-5}
+cox_above_1_below_5 <- run_cox_with_cumulative(age_above_1_below_5)
+summary(cox_above_1_below_5)
+```
+
+### Age above 5
+
+```{r cumulative-age-above-5}
+cox_above_5 <- run_cox_with_cumulative(age_above_5)
+summary(cox_above_5)
+```
+
+
+## {-}
+
+```{r summary-of-model-with-cumulative, eval=FALSE, include=FALSE}
+cumulative_sig_vars <- sapply(
+  list(cox_below_1, cox_above_1_below_5, cox_above_5),
+  function(cox_obj, level=0.05) {
+    varnames = names(cox_obj$coef)
+    pvals = summary(cox_obj)$coef[, "Pr(>|z|)"]
+    sig_vars = varnames[abs(pvals) < level]
+    sig_pvals = pvals[abs(pvals) < level]
+    sig_codes = symnum(sig_pvals, na = FALSE,
+                       cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1), 
+                       symbols = c("***", "**", "*", ".", " "))
+    return (paste(sig_vars, sig_codes))
+  }
+)
+
+max_length <- max(sapply(cumulative_sig_vars, length))
+cumulative_sig_vars <- lapply(cumulative_sig_vars, function(v) c(v, rep(NA, max_length - length(v))))
+
+options(knitr.kable.NA = '')
+data.frame(do.call(rbind, cumulative_sig_vars)) %>%
+  `row.names<-`(c("Age 1-", "Age 1+, 5-", "Age 5+")) %>%
+  kable(col.names = c("", "Signif. Variables")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+
+```{r comparison-plot-cumulative-model, eval=FALSE, include=FALSE}
+p1 <- plot_forest(cox_below_1)
+p2 <- plot_forest(cox_above_1_below_5)
+p3 <- plot_forest(cox_above_5)
+
+p1 + p2 + p3
+```
+
+
+
+## Discussion
+
+
+- For the full model with main effects of all six adversities, group `age_below_1` and `age_above_5` behave similarly in terms of the significant variable `adv_mom`. Group `age_above_1_below_5` has one more significant relationship with `adv_dsi`, and the significance level of `adv_mom` is much lower, indicating the hazard might work differently within this age range.
+
+- For the model selected by lasso, the resulting model picks quite a small fraction of variables, with no interaction terms in the `age_below_1` group, and one non-significant interaction terms in the `age_above_1_below_5` group. Interaction term `adv_mom:adv_rain` is significant in the `age_above_5` group while the other interaction term `adv_mom:adv_sib` is picked but not significant.
+
+- For the model selected by stepwise BIC, no interaction terms are selected in `age_below_1` and `age_above_1_below_5`, which is the same result as in models selected by lasso. Meanwhile, `adv_mom:adv_rain` is picked and significant in `age_above_5`.
+
+- Interestingly, the cumulative model in the "age_below_1" group shows significance for the cumulative variable and the interaction term. There does not seem to be much worth noting in the other two groups.
+
+
+
+
