@@ -21,3 +21,8 @@
   - Report: [View](reports/comparison-of-three-age-subgroups_with_sci.html), [Source](Rmd/comparison-of-three-age-subgroups.Rmd)
   - Data: `Aim3-early-adversity-subjects-F-survival-2021-01-29.xlsx`
   - Method: Replace the `adv_dsi` with `adv_sci`; Use a finer categorized `adv_other_cumulative`.
+
+5. 0228 continuous effects of early adversities
+  - Report: [View](reports/continuous_effects.html), [Source](Rmd/continuous_effects.Rmd)
+  - Data: `Aim3-early-adversity-subjects-F-survival-2021-02-17.csv`
+  - Method: first analyze adversity by adversity, with linear terms and later add quadratic terms. No model selection or interaction for now
