@@ -1,0 +1,551 @@
+---
+title: "Continuous Effects of Early Adversities with Interactions Considered"
+author: "Jiajun"
+date: "03/05/2021"
+output:
+  rmdformats::readthedown:
+    css: ["data/css/text_style.css", "data/css/table_style.css"]
+    theme: sandstone
+    toc_depth: 3
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Library and Data
+
+```{r load-library-and-data, class.source='fold-show'}
+library(survival)
+library(glmnet)
+library(kableExtra)
+library(tidyverse)
+library(GGally)
+library(penalized)
+
+raw_data <- read_csv("data/Aim3-early-adversity-subjects-F-survival-2021-02-17.csv")
+raw_data_sub <- raw_data %>%
+  dplyr::select(dead, age,
+                rain, density, mom_rank, mom_sci,
+                adv_mom, adv_sib) %>%
+  mutate(adv_mom = as.numeric(adv_mom),
+         adv_sib = as.numeric(adv_sib)) %>%
+  filter(age > 0)
+```
+
+```{r covariates-info-table}
+covariate_names <- c("adv_mom", "adv_sib",
+                     "rain", "density", "mom_rank", "mom_sci")
+covariate_types <- c(rep("Logical", 2), rep("Numeric", 4))
+covariate_meanings <- c("Mom dies before age 4",
+                       "A close sibling is born",
+                       "Group size at birth",
+                       "Rainfall in the first year of life",
+                       "Mom rank",
+                       "Mom Social connection")
+covariate_summary <- c("139/562",
+                       "149/562",
+                       "340.5(134.7)",
+                       "26.6(8.6)",
+                       "0.5(0.3)",
+                       "0.1(0.75)")
+
+data.frame(
+  list(types = covariate_types,
+       meanings = covariate_meanings,
+       summary = covariate_summary)
+) %>%
+  `row.names<-`(covariate_names) %>%
+  kable(col.names = c("Type", "Description", "Summary")) %>%
+  kable_styling(full_width = FALSE, position = "center", font_size = 18)
+```
+
+
+```{r}
+ggpairs(data = raw_data_sub %>%
+          select(- c(dead, age)) %>%
+          mutate(adv_mom = as.factor(adv_mom),
+                 adv_sib = as.factor(adv_sib)),
+        lower = list(continuous = wrap("points", size = 0.5, alpha = 0.5),
+                     combo = wrap("facethist", bins = 20))) +
+  theme_classic()
+```
+
+
+<br>
+
+## Process
+
+```{r create-dataset-subgroups, echo=FALSE}
+age_below_1 <- raw_data_sub %>%
+  mutate(dead = if_else(age > 1, FALSE, dead)) %>%
+  mutate(age = if_else(age > 1, 1, age))
+
+age_above_1_below_5 <- raw_data_sub %>%
+  filter(age >= 1) %>%
+  mutate(dead = if_else(age > 5, FALSE, dead)) %>%
+  mutate(age = if_else(age > 5, 5, age))
+
+age_above_5 <- raw_data_sub %>%
+  filter(age >= 5)
+```
+
+- As before, the dataset is divided into infant, juvenile, and adults phase based on the cut of `age` at 1 and 5.
+- For each subgroup
+  - First run a simple regression with one variable at a time. (e.g. survival ~ rain + (maybe rain^2)).
+  - Then put all variables in one model.
+  - Lastly, include the interactions which is significant when modeled individually, apply variable selection using lasso, and run the model on picked variables.
+
+
+<br>
+
+## Age below 1 {.tabset .tabset-fade .tabset-pills}
+
+### adv_mom
+
+```{r}
+g1_adv_mom_coxph <- coxph(Surv(age, dead) ~ adv_mom, data = age_below_1)
+g1_adv_mom_coxph
+```
+
+```{r echo=FALSE}
+termplot(g1_adv_mom_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### rain
+
+```{r}
+g1_rain_coxph <- coxph(Surv(age, dead) ~ pspline(rain, df = 4), data = age_below_1)
+g1_rain_coxph
+```
+
+```{r echo=FALSE}
+termplot(g1_rain_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### density
+
+```{r}
+g1_density_coxph <- coxph(Surv(age, dead) ~ pspline(density, df = 4), data = age_below_1)
+g1_density_coxph
+```
+
+```{r echo=FALSE}
+termplot(g1_density_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### mom_rank
+
+```{r}
+g1_momrank_coxph <- coxph(Surv(age, dead) ~ pspline(mom_rank, df = 4), data = age_below_1)
+g1_momrank_coxph
+```
+
+```{r echo=FALSE}
+termplot(g1_momrank_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+### mom_sci
+
+```{r}
+g1_momsci_coxph <- coxph(Surv(age, dead) ~ pspline(mom_sci, df = 4), data = age_below_1)
+g1_momsci_coxph
+```
+
+```{r echo=FALSE}
+termplot(g1_momsci_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+## {-}
+
+## Age below one: All in one model {.tabset .tabset-fade .tabset-pills}
+
+### Main effects
+
+```{r}
+g1_all <- coxph(
+  Surv(age, dead) ~ adv_mom + rain + density + mom_rank + mom_sci,
+  data = age_below_1
+)
+print(g1_all)
+```
+
+
+### Lasso path
+
+```{r}
+penalized_covariates <- model.matrix(
+  ~ adv_mom + rain + density + mom_rank + mom_sci +
+    rain:mom_sci + adv_mom:rain + adv_mom:mom_sci,
+  data = age_below_1
+) %>% .[, colnames(.) != "(Intercept)"]
+
+opt <- optL1(
+  Surv(age_below_1$age, age_below_1$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  fold = 10,
+  trace = F
+)
+
+stepwise <- penalized(
+  Surv(age_below_1$age, age_below_1$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  steps = 20,
+  trace = F
+)
+
+plotpath(
+  stepwise,
+  labelsize = 0.8,
+  standardize = T
+)
+
+abline(
+  v = opt$lambda,
+  col = "gray",
+  lwd = 2
+)
+```
+
+### Results with picked predictors
+
+```{r}
+g1_opt_lasso <- penalized(
+  Surv(age_below_1$age, age_below_1$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  lambda1 = opt$lambda,
+  trace = F
+)
+
+nonzero_varnames <- names(g1_opt_lasso@penalized)[g1_opt_lasso@penalized != 0]
+formula <- paste0(" Surv(age, dead) ~ ", paste(nonzero_varnames, collapse = " + "))
+g1_final_coxph <- coxph(
+  as.formula(formula),
+  data = age_below_1
+)
+
+g1_final_coxph
+```
+
+
+
+## {-}
+
+<br><br>
+
+## Age above 1 and below 5 {.tabset .tabset-fade .tabset-pills}
+
+### adv_mom
+
+```{r}
+g2_adv_mom_coxph <- coxph(Surv(age, dead) ~ adv_mom, data = age_above_1_below_5)
+g2_adv_mom_coxph
+```
+
+```{r echo=FALSE}
+termplot(g2_adv_mom_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+### adv_sib
+
+```{r}
+g2_adv_sib_coxph <- coxph(Surv(age, dead) ~ adv_sib, data = age_above_1_below_5)
+g2_adv_sib_coxph
+```
+
+```{r, echo=FALSE}
+termplot(g2_adv_sib_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+### rain
+
+```{r}
+g2_rain_coxph <- coxph(Surv(age, dead) ~ pspline(rain, df = 4), data = age_above_1_below_5)
+g2_rain_coxph
+```
+
+```{r echo=FALSE}
+termplot(g2_rain_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### density
+
+```{r}
+g2_density_coxph <- coxph(Surv(age, dead) ~ pspline(density, df = 4), data = age_above_1_below_5)
+g2_density_coxph
+```
+
+```{r echo=FALSE}
+termplot(g2_density_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### mom_rank
+
+```{r}
+g2_momrank_coxph <- coxph(Surv(age, dead) ~ pspline(mom_rank, df = 4), data = age_above_1_below_5)
+g2_momrank_coxph
+```
+
+```{r echo=FALSE}
+termplot(g2_momrank_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+### mom_sci
+
+```{r}
+g2_momsci_coxph <- coxph(Surv(age, dead) ~ pspline(mom_sci, df = 4), data = age_above_1_below_5)
+g2_momsci_coxph
+```
+
+```{r echo=FALSE}
+termplot(g2_momsci_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+## {-}
+
+## Age above 1 below 5: All in one model {.tabset .tabset-fade .tabset-pills}
+
+### Main effects
+
+```{r}
+g2_all <- coxph(
+  Surv(age, dead) ~ adv_mom + adv_sib + rain + density + mom_rank + mom_sci,
+  data = age_above_1_below_5
+)
+print(g2_all)
+```
+
+
+### Lasso path
+
+```{r}
+penalized_covariates <- model.matrix(
+  ~adv_mom + adv_sib + rain + density + I(density^2) + mom_rank + mom_sci +
+    adv_mom:density + adv_mom:I(density^2),
+  data = age_above_1_below_5
+) %>% .[, colnames(.) != "(Intercept)"]
+
+opt <- optL1(
+  Surv(age_above_1_below_5$age, age_above_1_below_5$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  fold = 10,
+  trace = F
+)
+
+stepwise <- penalized(
+  Surv(age_above_1_below_5$age, age_above_1_below_5$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  steps = 20,
+  trace = F
+)
+
+plotpath(
+  stepwise,
+  labelsize = 0.8,
+  standardize = T
+)
+
+abline(
+  v = opt$lambda,
+  col = "gray",
+  lwd = 2
+)
+```
+
+### Results with picked predictors
+
+```{r}
+g2_opt_lasso <- penalized(
+  Surv(age_above_1_below_5$age, age_above_1_below_5$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  lambda1 = opt$lambda,
+  trace = F
+)
+
+nonzero_varnames <- names(g2_opt_lasso@penalized)[g2_opt_lasso@penalized != 0]
+formula <- paste0(" Surv(age, dead) ~ ", paste(nonzero_varnames, collapse = " + "))
+g2_final_coxph <- coxph(
+  as.formula(formula),
+  data = age_above_1_below_5
+)
+
+g2_final_coxph
+```
+
+
+## {-}
+
+<br><br>
+
+## Age above 5 {.tabset .tabset-fade .tabset-pills}
+
+### adv_mom
+
+```{r}
+g3_adv_mom_coxph <- coxph(Surv(age, dead) ~ adv_mom, data = age_above_5)
+g3_adv_mom_coxph
+```
+
+```{r echo=FALSE}
+termplot(g3_adv_mom_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### adv_sib
+
+```{r}
+g3_adv_sib_coxph <- coxph(Surv(age, dead) ~ adv_sib, data = age_above_5)
+g3_adv_sib_coxph
+```
+
+```{r, echo=FALSE}
+termplot(g3_adv_sib_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### rain
+
+```{r}
+g3_rain_coxph <- coxph(Surv(age, dead) ~ pspline(rain, df = 4), data = age_above_5)
+g3_rain_coxph
+```
+
+```{r echo=FALSE}
+termplot(g3_rain_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### density
+
+```{r}
+g3_density_coxph <- coxph(Surv(age, dead) ~ pspline(density, df = 4), data = age_above_5)
+g3_density_coxph
+```
+
+```{r echo=FALSE}
+termplot(g3_density_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+### mom_rank
+
+```{r}
+g3_momrank_coxph <- coxph(Surv(age, dead) ~ pspline(mom_rank, df = 4), data = age_above_5)
+g3_momrank_coxph
+```
+
+```{r echo=FALSE}
+termplot(g3_momrank_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+### mom_sci
+
+```{r}
+g3_momsci_coxph <- coxph(Surv(age, dead) ~ pspline(mom_sci, df = 4), data = age_above_5)
+g3_momsci_coxph
+```
+
+```{r echo=FALSE}
+termplot(g3_momsci_coxph, se=T, terms=1, ylabs = "Log hazard")
+```
+
+
+## {-}
+
+## Age above 5: All in one model {.tabset .tabset-fade .tabset-pills}
+
+### Main effects
+
+```{r}
+g3_all <- coxph(
+  Surv(age, dead) ~ adv_mom + adv_sib + rain + density + mom_rank + mom_sci,
+  data = age_above_5
+)
+print(g3_all)
+```
+
+
+### Lasso path
+
+```{r}
+penalized_covariates <- model.matrix(
+  ~adv_mom + adv_sib + rain + density + I(density^2) + mom_rank + mom_sci +
+    adv_mom:density + adv_mom:I(density^2),
+  data = age_above_5
+) %>% .[, colnames(.) != "(Intercept)"]
+
+opt <- optL1(
+  Surv(age_above_5$age, age_above_5$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  fold = 10,
+  trace = F
+)
+
+stepwise <- penalized(
+  Surv(age_above_5$age, age_above_5$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  steps = 20,
+  trace = F
+)
+
+plotpath(
+  stepwise,
+  labelsize = 0.8,
+  standardize = T
+)
+
+abline(
+  v = opt$lambda,
+  col = "gray",
+  lwd = 2
+)
+```
+
+### Results with picked predictors
+
+```{r}
+g3_opt_lasso <- penalized(
+  Surv(age_above_5$age, age_above_5$dead),
+  penalized = penalized_covariates,
+  standardize = T,
+  lambda1 = opt$lambda,
+  trace = F
+)
+
+nonzero_varnames <- names(g3_opt_lasso@penalized)[g3_opt_lasso@penalized != 0]
+formula <- paste0(" Surv(age, dead) ~ ", paste(nonzero_varnames, collapse = " + "))
+g3_final_coxph <- coxph(
+  as.formula(formula),
+  data = age_above_5
+)
+
+g3_final_coxph
+```
+
+
+## {-}
+
+<br><br>
+
+## Discussion
+
+- Few of `rain`, `density`, `mom_rank`, and `mom_sci` have shown significance in the cox model on the three datasets, either as a single variable or put together.
+- For the infant group(age < 1), `rain` is significant with p-value 0.03. However, no significance is shown for the nonlinear part.
+- Nonlinear part of `density` is significant for the juvenile(1 < age < 5) and adult(age > 5) group, with p-value 0.023 and 0.03 respectively.
+
+
+
+
