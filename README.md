@@ -26,3 +26,10 @@
   - Report: [View](reports/continuous_effects.html), [Source](Rmd/continuous_effects.Rmd)
   - Data: `Aim3-early-adversity-subjects-F-survival-2021-02-17.csv`
   - Method: first analyze adversity by adversity, with linear terms and later add quadratic terms. No model selection or interaction for now
+
+6. 0308 continuous effects with interaction terms considered
+  - Report: [View](reports/continuous_effects_with_interactions.html), [Source](Rmd/continuous_effects_with_interactions.Rmd)
+  - Data: `Aim3-early-adversity-subjects-F-survival-2021-01-29.xlsx`
+  - Method: based on the 0228, include interaction of terms that are significant when modeled individually. run lasso to further select the variables.
+  
+
